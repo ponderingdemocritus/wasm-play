@@ -1,12 +1,24 @@
-import { useContext } from "react"
-import { WASMContext } from "../context/WASM"
+import { useContext, useEffect } from "react";
+import { WASMContext } from "../context/WASM";
 
 export const WASMExample = () => {
-  const ctx = useContext(WASMContext)
+  const ctx = useContext(WASMContext);
+
+  useEffect(() => {
+    // Initialize wasm env.
+    if (ctx.wasm) {
+    }
+    // ctx.wasm.start();
+  }, [ctx]);
 
   if (!ctx.wasm) {
-    return <>...</>
+    return <>...</>;
   }
 
-  return <>Computed from WASM: 4+3={ctx.wasm.add(4,3)}</>
-}
+  return (
+    <div>
+      Computed from WASM: 4+3=
+      <button onClick={() => ctx.wasm.runCairoProgram()}>Click me</button>
+    </div>
+  );
+};
