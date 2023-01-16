@@ -1,43 +1,40 @@
-mod utils;
-
 use cairo_rs::{
-    hint_processor::builtin_hint_processor::hint_utils::get_integer_from_var_name,
     hint_processor::{
-        builtin_hint_processor::builtin_hint_processor_definition::{
-            BuiltinHintProcessor, HintFunc,
+        builtin_hint_processor::{
+            builtin_hint_processor_definition::{BuiltinHintProcessor, HintFunc},
+            hint_utils::{get_integer_from_var_name, get_ptr_from_var_name},
         },
         hint_processor_definition::HintReference,
     },
     serde::deserialize_program::ApTracking,
-    types::{exec_scope::ExecutionScopes, program::Program},
+    types::{
+        exec_scope::ExecutionScopes,
+        program::Program,
+        relocatable::{MaybeRelocatable, Relocatable},
+    },
     vm::{
         errors::vm_errors::VirtualMachineError, runners::cairo_runner::CairoRunner,
         vm_core::VirtualMachine,
     },
 };
-
-use num_bigint::{BigInt, Sign};
-use std::io::Cursor;
+use num_bigint::BigInt;
+use std::path::Path;
+use std::{collections::HashMap, io::Cursor};
 use wasm_bindgen::prelude::*;
 
-use std::collections::HashMap;
-
-// When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
-// allocator.
-#[cfg(feature = "wee_alloc")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(msg: &str);
+macro_rules! bigint {
+    ($val : expr) => {
+        Into::<BigInt>::into($val)
+    };
 }
 
-#[cfg(feature = "console_error_panic_hook")]
-#[wasm_bindgen(start)]
-pub fn start() {
-    crate::utils::set_panic_hook();
+macro_rules! mayberelocatable {
+    ($val1 : expr, $val2 : expr) => {
+        MaybeRelocatable::from(($val1, $val2))
+    };
+    ($val1 : expr) => {
+        MaybeRelocatable::from((bigint!($val1)))
+    };
 }
 
 macro_rules! console_log {
@@ -46,59 +43,140 @@ macro_rules! console_log {
     ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
 }
 
-fn print_a_hint(
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(msg: &str);
+}
+
+#[wasm_bindgen(js_name = runCairoProgram)]
+pub fn run_cairo_program(num_pts: u32, theta_0_deg: i32, v_0: u32) -> Result<(), JsError> {
+    const PROGRAM_JSON: &str = include_str!("./projectile_plot_compiled.json");
+
+    let program = Program::from_reader(Cursor::new(PROGRAM_JSON), Some("projectile_path"))?;
+
+    let mut cairo_runner = CairoRunner::new(&program, "all", false).unwrap();
+    let mut vm = VirtualMachine::new(program.prime, true);
+
+    let mut hint_processor = BuiltinHintProcessor::new_empty();
+    // Wrap the Rust hint implementation in a Box smart pointer inside a HintFunc
+    let hint = HintFunc(Box::new(print_two_array_hint));
+    //Add the custom hint, together with the Python code
+    hint_processor.add_hint(
+        String::from("for i in range(x_fp_s_len):\n    print(memory[ids.x_fp_s_len + i])\nfor i in range(y_fp_s_len):\n    print(memory[ids.y_fp_s_len + i])"),
+        hint,
+    );
+
+    let entrypoint = program
+        .identifiers
+        .get(&format!("__main__.{}", "projectile_path"))
+        .unwrap()
+        .pc
+        .unwrap();
+
+    cairo_runner.initialize_builtins(&mut vm).unwrap();
+    cairo_runner.initialize_segments(&mut vm, None);
+
+    cairo_runner
+        .run_from_entrypoint(
+            entrypoint,
+            vec![
+                &MaybeRelocatable::from((2, 0)), //range check builtin
+                &mayberelocatable!(num_pts),
+                &mayberelocatable!(theta_0_deg),
+                &mayberelocatable!(v_0),
+            ],
+            false,
+            true,
+            true,
+            &mut vm,
+            &hint_processor,
+        )
+        .unwrap();
+    Ok(())
+}
+
+fn print_two_array_hint(
     vm: &mut VirtualMachine,
     _exec_scopes: &mut ExecutionScopes,
     ids_data: &HashMap<String, HintReference>,
     ap_tracking: &ApTracking,
     _constants: &HashMap<String, BigInt>,
 ) -> Result<(), VirtualMachineError> {
-    let a = get_integer_from_var_name("a", vm, ids_data, ap_tracking)?;
-    println!("{}", a);
-    console_log!("{}", a);
+    let x_len = get_integer_from_var_name("x_fp_s_len", vm, ids_data, ap_tracking)?
+        .to_u32_digits()
+        .1[0];
+    let y_len = get_integer_from_var_name("y_fp_s_len", vm, ids_data, ap_tracking)?
+        .to_u32_digits()
+        .1[0];
+    let x = get_ptr_from_var_name("x_fp_s", vm, ids_data, ap_tracking)?;
+    let y = get_ptr_from_var_name("y_fp_s", vm, ids_data, ap_tracking)?;
+    for i in 0..x_len as usize {
+        let word_address = Relocatable {
+            segment_index: x.segment_index,
+            offset: i,
+        };
+        let value = vm.get_integer(&word_address)?;
+        console_log!("{}", value);
+    }
+    for i in 0..y_len as usize {
+        let word_address = Relocatable {
+            segment_index: y.segment_index,
+            offset: i,
+        };
+        let value = vm.get_integer(&word_address)?;
+        console_log!("{}", value);
+    }
     Ok(())
 }
 
-#[wasm_bindgen(js_name = runCairoProgram)]
-pub fn run_cairo_program() -> Result<(), JsError> {
-    const PROGRAM_JSON: &str = include_str!("./game.json");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let program = Program::from_reader(Cursor::new(PROGRAM_JSON), Some("main"))?;
-    let mut runner = CairoRunner::new(&program, "all", false)?;
-    let mut vm = VirtualMachine::new(
-        BigInt::new(Sign::Plus, vec![1, 0, 0, 0, 0, 0, 17, 134217728]),
-        false,
-    );
+    #[test]
+    fn test_run_function() {
+        let program_path = "./contracts/compiled_projectile_plot.json";
+        let program = Program::from_file(Path::new(program_path), Some("projectile_path")).unwrap();
 
-    let hint = HintFunc(Box::new(print_a_hint));
+        let mut cairo_runner = CairoRunner::new(&program, "all", false).unwrap();
+        let mut vm = VirtualMachine::new(program.prime, true);
 
-    let mut hint_processor = BuiltinHintProcessor::new_empty();
+        let mut hint_processor = BuiltinHintProcessor::new_empty();
+        // Wrap the Rust hint implementation in a Box smart pointer inside a HintFunc
+        let hint = HintFunc(Box::new(print_two_array_hint));
+        //Add the custom hint, together with the Python code
+        hint_processor.add_hint(
+            String::from("for i in range(x_fp_s_len):\n    print(memory[ids.x_fp_s_len + i])\nfor i in range(y_fp_s_len):\n    print(memory[ids.y_fp_s_len + i])"),
+            hint,
+        );
 
-    hint_processor.add_hint(String::from("print(ids.a)"), hint);
+        let entrypoint = program
+            .identifiers
+            .get(&format!("__main__.{}", "projectile_path"))
+            .unwrap()
+            .pc
+            .unwrap();
 
-    let end = runner.initialize(&mut vm)?;
+        cairo_runner.initialize_builtins(&mut vm).unwrap();
+        cairo_runner.initialize_segments(&mut vm, None);
 
-    runner.initialize_builtins(&mut vm)?;
-    runner.initialize_segments(&mut vm, None);
-
-    runner.run_until_pc(end, &mut vm, &hint_processor)?;
-
-    let mut buffer = Cursor::new(Vec::new());
-    runner.write_output(&mut vm, &mut buffer)?;
-    log(String::from_utf8(buffer.into_inner())?.as_str());
-
-    // log("Hello from Rust!");
-
-    // cairo_run(
-    //     program_json,
-    //     "main",
-    //     false,
-    //     true,
-    //     "small",
-    //     false,
-    //     &hint_processor,
-    // )
-    // .expect("Couldn't run program");
-
-    Ok(())
+        cairo_runner
+            .run_from_entrypoint(
+                entrypoint,
+                vec![
+                    &MaybeRelocatable::from((2, 0)), //range check builtin
+                    &mayberelocatable!(25),
+                    &mayberelocatable!(60),
+                    &mayberelocatable!(40),
+                ],
+                false,
+                true,
+                true,
+                &mut vm,
+                &hint_processor,
+            )
+            .unwrap();
+        assert!(cairo_runner.relocate(&mut vm).is_ok());
+    }
 }

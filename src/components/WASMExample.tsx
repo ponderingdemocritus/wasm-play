@@ -18,7 +18,9 @@ export const WASMExample = () => {
   return (
     <div>
       Computed from WASM: 4+3=
-      <button onClick={() => ctx.wasm.runCairoProgram()}>Click me</button>
+      <button onClick={() => ctx.wasm.runCairoProgram(2, 2, 2)}>
+        Click me
+      </button>
     </div>
   );
 };
