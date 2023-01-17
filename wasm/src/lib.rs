@@ -1,21 +1,14 @@
+use anyhow::Error;
 use cairo_rs::{
-    hint_processor::{
-        builtin_hint_processor::{
-            builtin_hint_processor_definition::{BuiltinHintProcessor, HintFunc},
-            hint_utils::{get_integer_from_var_name, get_ptr_from_var_name},
-        },
-        hint_processor_definition::HintReference,
+    hint_processor::builtin_hint_processor::{
+        builtin_hint_processor_definition::BuiltinHintProcessor,
+        hint_utils::{get_integer_from_var_name, get_ptr_from_var_name},
     },
-    serde::deserialize_program::ApTracking,
     types::{
-        exec_scope::ExecutionScopes,
         program::Program,
         relocatable::{MaybeRelocatable, Relocatable},
     },
-    vm::{
-        errors::vm_errors::VirtualMachineError, runners::cairo_runner::CairoRunner,
-        vm_core::VirtualMachine,
-    },
+    vm::{runners::cairo_runner::CairoRunner, vm_core::VirtualMachine},
 };
 use num_bigint::BigInt;
 use std::path::Path;
@@ -37,20 +30,17 @@ macro_rules! mayberelocatable {
     };
 }
 
-macro_rules! console_log {
-    // Note that this is using the `log` function imported above during
-    // `bare_bones`
-    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
-}
-
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(msg: &str);
 }
 
-#[wasm_bindgen(js_name = runCairoProgram)]
-pub fn run_cairo_program(num_pts: u32, theta_0_deg: i32, v_0: u32) -> Result<(), JsError> {
+pub fn run_cairo_program(
+    num_pts: u32,
+    theta_0_deg: i32,
+    v_0: u32,
+) -> Result<VirtualMachine, Error> {
     const PROGRAM_JSON: &str = include_str!("./projectile_plot_compiled.json");
 
     let program = Program::from_reader(Cursor::new(PROGRAM_JSON), Some("projectile_path"))?;
@@ -58,14 +48,7 @@ pub fn run_cairo_program(num_pts: u32, theta_0_deg: i32, v_0: u32) -> Result<(),
     let mut cairo_runner = CairoRunner::new(&program, "all", false).unwrap();
     let mut vm = VirtualMachine::new(program.prime, true);
 
-    let mut hint_processor = BuiltinHintProcessor::new_empty();
-    // Wrap the Rust hint implementation in a Box smart pointer inside a HintFunc
-    let hint = HintFunc(Box::new(print_two_array_hint));
-    //Add the custom hint, together with the Python code
-    hint_processor.add_hint(
-        String::from("for i in range(x_fp_s_len):\n    print(memory[ids.x_fp_s_len + i])\nfor i in range(y_fp_s_len):\n    print(memory[ids.y_fp_s_len + i])"),
-        hint,
-    );
+    let hint_processor = BuiltinHintProcessor::new_empty();
 
     let entrypoint = program
         .identifiers
@@ -93,7 +76,13 @@ pub fn run_cairo_program(num_pts: u32, theta_0_deg: i32, v_0: u32) -> Result<(),
             &hint_processor,
         )
         .unwrap();
-    Ok(())
+    Ok(vm)
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct CairoOutput {
+    pub x_positions: Vec<BigInt>,
+    pub y_positions: Vec<BigInt>,
 }
 
 fn print_two_array_hint(
