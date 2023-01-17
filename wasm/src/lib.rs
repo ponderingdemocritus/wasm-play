@@ -125,47 +125,28 @@ mod tests {
 
     #[test]
     fn test_run_function() {
-        let program_path = "./contracts/compiled_projectile_plot.json";
-        let program = Program::from_file(Path::new(program_path), Some("projectile_path")).unwrap();
-
-        let mut cairo_runner = CairoRunner::new(&program, "all", false).unwrap();
-        let mut vm = VirtualMachine::new(program.prime, true);
-
-        let mut hint_processor = BuiltinHintProcessor::new_empty();
-        // Wrap the Rust hint implementation in a Box smart pointer inside a HintFunc
-        let hint = HintFunc(Box::new(print_two_array_hint));
-        //Add the custom hint, together with the Python code
-        hint_processor.add_hint(
-            String::from("for i in range(x_fp_s_len):\n    print(memory[ids.x_fp_s_len + i])\nfor i in range(y_fp_s_len):\n    print(memory[ids.y_fp_s_len + i])"),
-            hint,
-        );
-
-        let entrypoint = program
-            .identifiers
-            .get(&format!("__main__.{}", "projectile_path"))
-            .unwrap()
-            .pc
-            .unwrap();
-
-        cairo_runner.initialize_builtins(&mut vm).unwrap();
-        cairo_runner.initialize_segments(&mut vm, None);
-
-        cairo_runner
-            .run_from_entrypoint(
-                entrypoint,
-                vec![
-                    &MaybeRelocatable::from((2, 0)), //range check builtin
-                    &mayberelocatable!(25),
-                    &mayberelocatable!(60),
-                    &mayberelocatable!(40),
-                ],
-                false,
-                true,
-                true,
-                &mut vm,
-                &hint_processor,
-            )
-            .unwrap();
-        assert!(cairo_runner.relocate(&mut vm).is_ok());
+        let vm = run_cairo_program(25, 60, 40).unwrap();
+        let mut x_positions: Vec<BigInt> = vec![];
+        let mut y_positions: Vec<BigInt> = vec![];
+        if let [x_len_big, maybe_x, y_len_big, maybe_y] = &vm.get_return_values(4).unwrap()[..] {
+            let x_len = x_len_big.get_int_ref().unwrap().to_u32_digits().1[0];
+            let y_len = y_len_big.get_int_ref().unwrap().to_u32_digits().1[0];
+            let x = maybe_x.get_relocatable().unwrap();
+            let y = maybe_y.get_relocatable().unwrap();
+            for i in 0..x_len {
+                let word_address = Relocatable {
+                    segment_index: x.segment_index,
+                    offset: i as usize,
+                };
+                x_positions.push(vm.get_integer(&word_address).unwrap().into_owned());
+            }
+            for i in 0..y_len {
+                let word_address = Relocatable {
+                    segment_index: y.segment_index,
+                    offset: i as usize,
+                };
+                y_positions.push(vm.get_integer(&word_address).unwrap().into_owned());
+            }
+        }
     }
 }
